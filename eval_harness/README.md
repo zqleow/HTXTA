@@ -99,7 +99,7 @@ Scorer (evaluate response)
 Summary Report
 ```
 
-## What I'd Add With More Time
+## Future Work / Further Improvements
 
 1. **LLM-as-judge scoring**: Use an LLM to evaluate responses semantically
 2. **Batch processing**: Async parallel requests
