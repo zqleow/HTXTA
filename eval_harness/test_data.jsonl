@@ -1,0 +1,5 @@
+{"id": "q1", "input": "What is the leave policy?", "expected": "14 days annual leave"}
+{"id": "q2", "input": "Who approves travel claims?", "expected": "Direct manager"}
+{"id": "q3", "input": "How many days of remote work per week?", "expected": "2 days"}
+{"id": "q4", "input": "What is the probation period?", "expected": "6 months"}
+{"id": "q5", "input": "When is the annual function?", "expected": "December"}
