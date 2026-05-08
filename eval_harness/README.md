@@ -101,8 +101,105 @@ Summary Report
 
 ## Future Work / Further Improvements
 
-1. **LLM-as-judge scoring**: Use an LLM to evaluate responses semantically
-2. **Batch processing**: Async parallel requests
-3. **Report generation**: HTML/PDF reports
-4. **Threshold configuration**: Configurable pass/fail threshold
-5. **Metrics logging**: Log to file for CI/CD integration
+### 1. LLM-as-judge scoring
+
+Use an LLM to evaluate responses semantically rather than with string matching.
+
+#### How It Works
+
+Add a `--judge-endpoint` CLI flag pointing to an evaluator LLM (e.g., GPT-4, Claude, or a fine-tuned evaluator like Prometheus). The evaluator receives a structured prompt with the question, expected answer, and actual response, then returns a score.
+
+#### Prompt Template
+
+```
+You are an expert evaluator of LLM responses. Given a question, an expected
+answer, and an actual response, rate the actual response on three criteria:
+
+1. Correctness (0.0-1.0): Does it contain the key information from the expected
+   answer? Extra detail is fine; contradiction is not.
+2. Completeness (0.0-1.0): Does it cover all required points?
+3. Conciseness (0.0-1.0): Does it avoid irrelevant or redundant content?
+
+Question: {question}
+Expected answer: {expected}
+Actual response: {actual}
+
+Output ONLY a valid JSON object:
+{{"score": <weighted average>, "correctness": <0.0-1.0>,
+  "completeness": <0.0-1.0>, "conciseness": <0.0-1.0>,
+  "reasoning": "<1-2 sentence justification>"}}
+```
+
+JSON output keeps the pipeline parseable. A `re.search(r'\{.*\}', text, re.DOTALL)` fallback handles markdown-wrapped responses. If parsing fails entirely, log the raw output and fall back to hybrid scoring.
+
+#### Judge Calibration
+
+A judge LLM has its own biases. Calibration ensures scores correlate with human judgment.
+
+1. **Collect a human-annotated set** — 50-100 cases scored by 2-3 raters on the same rubric. Compute inter-rater reliability (Cohen's κ). Discard cases where humans disagree.
+2. **Run the judge on the same set** — Compare judge vs human scores using:
+   - Pearson/Spearman correlation (ranking consistency)
+   - Mean absolute error (score accuracy)
+   - Pass/fail confusion matrix at the threshold
+3. **Adjust thresholds** — If the judge is systematically lenient (e.g., judge assigns 0.8 where humans assign 0.6), apply a calibration mapping.
+
+**Periodic re-calibration:** Run the calibration set monthly against the latest judge model. Alert if correlation drops below 0.8.
+
+#### Judge Bias Mitigation
+
+| Bias | Mitigation |
+|------|------------|
+| **Self-enhancement** (prefers own outputs) | Use a different model as judge than the one being evaluated |
+| **Position bias** (prefers first or last answer) | Test in both orders and average the scores |
+| **Verbosity bias** (prefers longer answers) | Add conciseness criterion; constrain judge `max_tokens` |
+| **Rubric overfitting** (always gives 1.0) | Include trap cases (plausible-sounding but wrong answers) in calibration |
+| **Score anchoring** (defaults to mid-range) | Few-shot prompt with examples at 0.2, 0.5, 0.8, 1.0 |
+
+For high-stakes evaluations, run a multi-judge ensemble (3 models) and take the median. Flag cases where judges disagree by >0.3 for human review.
+
+#### Integration Into the Harness
+
+```python
+class JudgeScorer:
+    def __init__(self, judge_endpoint: str, model: str = "gpt-4"):
+        self.client = EndpointClient(judge_endpoint)
+        self.model = model
+
+    def score(self, response, expected, question="") -> Tuple[float, str, Dict]:
+        # Build prompt → call judge → parse JSON → return (score, status, details)
+```
+
+- New CLI flag `--judge-endpoint` activates judge scoring (overrides `--scoring` to `judge`).
+- `Scorer.score()` dispatches to `JudgeScorer` when method is `"judge"`, passing `question` through.
+- Cache judge results by `(question, response)` hash in a local JSON/SQLite store to avoid redundant calls.
+
+#### Tradeoffs vs String-Based Scoring
+
+| Aspect | String-based | LLM-as-judge |
+|--------|-------------|--------------|
+| Speed | ~1ms per test | ~1-5s per test |
+| Cost | Free | API cost or GPU time |
+| Semantic understanding | None | High |
+| Bias | None | Multiple types to mitigate |
+| Reliability | Deterministic | Probabilistic (needs calibration) |
+| Best for | Factual QA, short answers | Open-ended, reasoning, creative tasks |
+
+**Recommended approach:** Run string-based scoring as the fast default, and enable LLM-as-judge via `--judge-endpoint` for deeper evaluation. Production pipelines run both and flag disagreements.
+
+---
+
+### 2. Batch processing
+
+Async parallel requests to the endpoint to reduce evaluation time when running hundreds of test cases. Use `concurrent.futures.ThreadPoolExecutor` or `asyncio` with `aiohttp`.
+
+### 3. Report generation
+
+Export results as HTML or PDF with pass/fail breakdowns, per-metric charts, and per-test-case details.
+
+### 4. Threshold configuration
+
+Make the pass/fail threshold (`0.8` in `run_evaluation`) configurable via `--threshold`. Different use cases may require stricter (compliance) or looser (creative) bars.
+
+### 5. Metrics logging
+
+Log results as structured JSON lines to a file for CI/CD trend tracking (e.g., "did this PR improve or regress our eval scores?").
