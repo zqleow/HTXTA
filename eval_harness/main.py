@@ -14,6 +14,7 @@ SYSTEM_PROMPT = """You are a helpful assistant. Answer based only on the provide
 
 
 def build_prompt(question: str, context: str = "") -> str:
+    """Construct the full prompt with system instructions and optional context."""
     if context:
         return f"{SYSTEM_PROMPT}\n\nContext:\n{context}\n\nQuestion: {question}"
     return f"{SYSTEM_PROMPT}\n\nQuestion: {question}"
@@ -32,7 +33,7 @@ def run_evaluation(test_file: str, endpoint_url: str, mock: bool, mode: str, sco
             client = MockEndpointClient(endpoint_url, mode=mode)
         else:
             print(f"Using real endpoint: {endpoint_url}")
-            client = EndpointClient(endpoint_url)
+            client = EndpointClient(endpoint_url, system_prompt=SYSTEM_PROMPT)
         
         scorer = Scorer(method=scoring)
         results = []
@@ -40,12 +41,11 @@ def run_evaluation(test_file: str, endpoint_url: str, mock: bool, mode: str, sco
         print(f"\nRunning evaluation...")
         for i, tc in enumerate(test_cases, 1):
             try:
-                prompt = build_prompt(tc["input"])
+                question = tc["input"]
+                response_data = client.generate(question)
                 
-                if mock:
-                    response_data = client.generate(prompt)
-                else:
-                    response_data = client.generate(prompt)
+                if "error" in response_data:
+                    raise RuntimeError(f"API error: {response_data['error_type']} - {response_data['message']}")
                 
                 actual_response = response_data["choices"][0]["message"]["content"]
                 expected_response = tc["expected"]
@@ -125,6 +125,7 @@ def run_evaluation(test_file: str, endpoint_url: str, mock: bool, mode: str, sco
 
 
 def main():
+    """Parse CLI arguments and run the evaluation. Returns an exit code."""
     parser = argparse.ArgumentParser(
         description="LLM Evaluation Harness",
         formatter_class=argparse.RawDescriptionHelpFormatter,

@@ -5,8 +5,9 @@ import os
 from pathlib import Path
 
 from test_loader import TestLoader
-from scorer import Scorer, calculate_pass_rate
+from scorer import Scorer, calculate_pass_rate, generate_summary
 from endpoint_client import MockEndpointClient
+from main import build_prompt
 
 
 class TestTestLoader(unittest.TestCase):
@@ -70,21 +71,67 @@ class TestScorer(unittest.TestCase):
         self.assertEqual(score, 0.0)
         self.assertEqual(status, "fail")
     
+    def test_case_insensitivity(self):
+        scorer = Scorer(method="exact")
+        score, status, details = scorer.score("14 DAYS ANNUAL LEAVE", "14 days annual leave")
+        self.assertEqual(score, 1.0)
+    
     def test_fuzzy_match(self):
         scorer = Scorer(method="fuzzy")
         score, status, details = scorer.score("14 days annual leave", "14 days")
         self.assertGreater(score, 0.5)
     
-    def test_keyword_match(self):
-        scorer = Scorer(method="keyword")
-        score, status, details = scorer.score("14 days annual leave per year", "14 days")
-        self.assertGreater(score, 0.0)
-    
-    def test_hybrid_scoring(self):
-        score, status, details = self.scorer.score("14 days", "14 days")
+    def test_fuzzy_high_similarity(self):
+        scorer = Scorer(method="fuzzy")
+        score, status, details = scorer.score("14 days annual leave", "14 days annual")
         self.assertEqual(status, "pass")
     
-    def test_calculate_pass_rate(self):
+    def test_fuzzy_low_similarity(self):
+        scorer = Scorer(method="fuzzy")
+        score, status, details = scorer.score("December", "14 days annual leave")
+        self.assertEqual(status, "fail")
+    
+    def test_keyword_match_all(self):
+        scorer = Scorer(method="keyword")
+        score, status, details = scorer.score("14 days annual leave per year", "14 days")
+        self.assertEqual(score, 1.0)
+        self.assertEqual(status, "pass")
+    
+    def test_keyword_match_partial(self):
+        scorer = Scorer(method="keyword")
+        score, status, details = scorer.score("14 days", "14 days annual leave")
+        self.assertEqual(status, "partial")
+        self.assertCountEqual(details.get("matched_keywords"), ["14", "days"])
+    
+    def test_keyword_match_none(self):
+        scorer = Scorer(method="keyword")
+        score, status, details = scorer.score("unrelated answer", "14 days annual leave")
+        self.assertEqual(status, "fail")
+    
+    def test_keyword_empty_expected(self):
+        scorer = Scorer(method="keyword")
+        score, status, details = scorer.score("some response", "")
+        self.assertEqual(score, 0.0)
+    
+    def test_hybrid_exact_path(self):
+        score, status, details = self.scorer.score("14 days", "14 days")
+        self.assertEqual(status, "pass")
+        self.assertEqual(details["method"], "exact")
+    
+    def test_hybrid_keyword_path(self):
+        score, status, details = self.scorer.score("14 days annual leave and extra words", "14 days annual leave")
+        self.assertEqual(status, "pass")
+        self.assertIn(details["method"], ("exact", "keyword"))
+    
+    def test_hybrid_fuzzy_path(self):
+        score, status, details = self.scorer.score("14 days annual", "14 days")
+        self.assertEqual(status, "pass")
+    
+    def test_hybrid_fail_path(self):
+        score, status, details = self.scorer.score("December party", "probation period is 6 months")
+        self.assertEqual(status, "fail")
+    
+    def test_calculate_pass_rate_mixed(self):
         results = [
             {"status": "pass"},
             {"status": "pass"},
@@ -96,6 +143,29 @@ class TestScorer(unittest.TestCase):
         self.assertEqual(summary["passed"], 2)
         self.assertEqual(summary["failed"], 1)
         self.assertEqual(summary["partial"], 1)
+        self.assertEqual(summary["pass_rate"], (2 + 0.5 * 1) / 4)
+    
+    def test_calculate_pass_rate_all_pass(self):
+        results = [{"status": "pass"}, {"status": "pass"}]
+        summary = calculate_pass_rate(results)
+        self.assertEqual(summary["pass_rate"], 1.0)
+    
+    def test_calculate_pass_rate_all_fail(self):
+        results = [{"status": "fail"}, {"status": "fail"}]
+        summary = calculate_pass_rate(results)
+        self.assertEqual(summary["pass_rate"], 0.0)
+    
+    def test_calculate_pass_rate_empty(self):
+        summary = calculate_pass_rate([])
+        self.assertEqual(summary["total"], 0)
+        self.assertEqual(summary["pass_rate"], 0.0)
+    
+    def test_calculate_pass_rate_all_error(self):
+        results = [{"status": "error"}, {"status": "error"}]
+        summary = calculate_pass_rate(results)
+        self.assertEqual(summary["total"], 2)
+        self.assertEqual(summary["passed"], 0)
+        self.assertEqual(summary["pass_rate"], 0.0)
 
 
 class TestMockEndpointClient(unittest.TestCase):
@@ -116,6 +186,41 @@ class TestMockEndpointClient(unittest.TestCase):
     def test_health_check(self):
         client = MockEndpointClient()
         self.assertTrue(client.health_check())
+
+
+class TestGenerateSummary(unittest.TestCase):
+    def test_generate_summary_includes_fields(self):
+        results = [{"status": "pass"}, {"status": "fail"}]
+        summary = generate_summary(results, "hybrid")
+        self.assertIn("scoring_method", summary)
+        self.assertIn("results", summary)
+        self.assertIn("pass_rate", summary)
+        self.assertEqual(summary["scoring_method"], "hybrid")
+        self.assertEqual(len(summary["results"]), 2)
+
+
+class TestBuildPrompt(unittest.TestCase):
+    def test_build_prompt_no_context(self):
+        prompt = build_prompt("What is the leave policy?")
+        self.assertIn("What is the leave policy?", prompt)
+        self.assertIn("You are a helpful assistant", prompt)
+        self.assertNotIn("Context:", prompt)
+
+    def test_build_prompt_with_context(self):
+        context = "Employees get 14 days of annual leave."
+        prompt = build_prompt("What is the leave policy?", context)
+        self.assertIn("What is the leave policy?", prompt)
+        self.assertIn("You are a helpful assistant", prompt)
+        self.assertIn("Context:", prompt)
+        self.assertIn(context, prompt)
+
+    def test_build_prompt_empty_input(self):
+        prompt = build_prompt("")
+        self.assertIn("Question:", prompt)
+
+    def test_build_prompt_special_chars(self):
+        prompt = build_prompt("What's the policy? (urgent)")
+        self.assertIn("What's the policy? (urgent)", prompt)
 
 
 if __name__ == "__main__":

@@ -4,10 +4,20 @@ from typing import List, Dict, Any
 
 
 class TestLoader:
+    """Parses and validates JSONL test files containing LLM evaluation cases.
+
+    Each line must be a JSON object with ``id``, ``input``, and ``expected`` keys.
+    """
+
     def __init__(self, file_path: str):
         self.file_path = Path(file_path)
     
     def load(self) -> List[Dict[str, Any]]:
+        """Read the JSONL file and return a list of test-case dicts.
+
+        Raises ``FileNotFoundError`` if the file does not exist,
+        ``ValueError`` if any line has invalid JSON or missing required fields.
+        """
         if not self.file_path.exists():
             raise FileNotFoundError(f"Test file not found: {self.file_path}")
         
@@ -31,6 +41,7 @@ class TestLoader:
         return test_cases
     
     def validate(self, test_cases: List[Dict[str, Any]]) -> bool:
+        """Check that every test case has string-typed ``id``, ``input``, and ``expected``."""
         for tc in test_cases:
             if not isinstance(tc.get('id'), str):
                 raise ValueError(f"Invalid id type: {type(tc.get('id'))}")
